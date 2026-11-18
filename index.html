@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Собери монеты</title>
+<style>
+html,body{margin:0;height:100%;background:#0b0e1a;overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none}
+body{display:flex;align-items:center;justify-content:center}
+canvas{display:block;background:#10142a}
+</style>
+</head>
+<body>
+<canvas id="c" width="400" height="700"></canvas>
+<script>
+const cv = document.getElementById('c'), ctx = cv.getContext('2d'), W = 400, H = 700;
+function fit() {
+  const s = Math.min(innerWidth / W, innerHeight / H);
+  cv.style.width = W * s + 'px';
+  cv.style.height = H * s + 'px';
+}
+addEventListener('resize', fit); fit();
+
+let rec = 0;
+try { rec = +localStorage.getItem('coinrec') || 0; } catch (e) {}
+
+// ----- звук (создаётся кодом) -----
+let ac = null;
+function beep(f, d, type, vol, slide) {
+  try {
+    ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    const o = ac.createOscillator(), g = ac.createGain(), t = ac.currentTime;
+    o.type = type || 'square';
+    o.frequency.setValueAtTime(f, t);
+    if (slide) o.frequency.linearRampToValueAtTime(f + slide, t + d);
+    g.gain.setValueAtTime(vol || 0.1, t);
+    g.gain.linearRampToValueAtTime(0, t + d);
+    o.connect(g); g.connect(ac.destination);
+    o.start(t); o.stop(t + d);
+  } catch (e) {}
+}
+const later = (fn, ms) => setTimeout(fn, ms);
+
+// ----- состояние -----
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const stars = Array.from({length: 45}, () => ({x: rand(0, W), y: rand(0, H), s: rand(.5, 2.2)}));
+let st = 'menu', g, ptr = null, overT = 0;
+const keys = {};
+
+function reset() {
+  g = {x: W / 2, y: H - 140, coins: [], en: [], score: 0, lives: 3,
+       t: 0, hurt: 0, banner: 0, lvl: 1, isNew: false};
+}
+reset();
+
+function pos(e) {
+  const r = cv.getBoundingClientRect();
+  return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height];
+}
+cv.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  cv.setPointerCapture(e.pointerId);
+  if (st !== 'play') {
+    if (st === 'over' && overT > 0) return;
+    reset(); st = 'play';
+    beep(440, .08); later(() => beep(660, .1), 80);
+  }
+  ptr = pos(e);
+});
+cv.addEventListener('pointermove', e => { if (ptr) ptr = pos(e); });
+const up = () => { ptr = null; };
+cv.addEventListener('pointerup', up);
+cv.addEventListener('pointercancel', up);
+addEventListener('keydown', e => {
+  keys[e.key] = true;
+  if (e.key === ' ' && st !== 'play' && !(st === 'over' && overT > 0)) { reset(); st = 'play'; }
+});
+addEventListener('keyup', e => { keys[e.key] = false; });
+
+function gameOver() {
+  st = 'over'; overT = 45; ptr = null;
+  beep(400, .6, 'square', .15, -300);
+  if (g.score > rec) {
+    rec = g.score; g.isNew = true;
+    try { localStorage.setItem('coinrec', rec); } catch (e) {}
+  }
+}
+
+function update() {
+  stars.forEach(s => { s.y += s.s; if (s.y > H) { s.y = 0; s.x = rand(0, W); } });
+  if (st === 'over') { if (overT > 0) overT--; return; }
+  if (st !== 'play') return;
+  const p = g;
+  if (ptr) {   // палец: персонаж держится чуть выше пальца, чтобы его было видно
+    p.x += (ptr[0] - p.x) * .3;
+    p.y += (ptr[1] - 70 - p.y) * .3;
+  }
+  const k = keys;
+  if (k.ArrowLeft || k.a) p.x -= 7;
+  if (k.ArrowRight || k.d) p.x += 7;
+  if (k.ArrowUp || k.w) p.y -= 7;
+  if (k.ArrowDown || k.s) p.y += 7;
+  p.x = clamp(p.x, 22, W - 22);
+  p.y = clamp(p.y, 90, H - 22);
+
+  p.t++;
+  const lvl = 1 + Math.floor(p.score / 10);
+  if (lvl > p.lvl) {
+    p.lvl = lvl; p.banner = 90;
+    [523, 659, 784, 1047].forEach((f, i) => later(() => beep(f, .1), i * 90));
+  }
+  if (p.t % 40 === 0) p.coins.push({x: rand(16, W - 16), y: -16, r: 14});
+  if (p.t % Math.max(16, 44 - lvl * 3) === 0)
+    p.en.push({x: rand(22, W - 22), y: -22, r: 19, v: Math.min(9, 3 + lvl * .5) + rand(0, 1.2)});
+
+  for (let i = p.coins.length - 1; i >= 0; i--) {
+    const c = p.coins[i]; c.y += 3.6;
+    if (Math.hypot(c.x - p.x, c.y - p.y) < c.r + 20) {
+      p.coins.splice(i, 1); p.score++;
+      beep(880, .05, 'square', .1); later(() => beep(1320, .07, 'square', .1), 50);
+    } else if (c.y > H + 20) p.coins.splice(i, 1);
+  }
+  for (let i = p.en.length - 1; i >= 0; i--) {
+    const e = p.en[i]; e.y += e.v;
+    if (Math.hypot(e.x - p.x, e.y - p.y) < e.r + 16) {
+      p.en.splice(i, 1);
+      if (p.hurt === 0) {
+        p.lives--; p.hurt = 60;
+        beep(220, .25, 'square', .15, -150);
+        if (navigator.vibrate) navigator.vibrate(80);
+        if (p.lives <= 0) { gameOver(); return; }
+      }
+    } else if (e.y > H + 30) p.en.splice(i, 1);
+  }
+  if (p.hurt > 0) p.hurt--;
+  if (p.banner > 0) p.banner--;
+}
+
+// ----- рисование -----
+function text(s, x, y, size, color, align) {
+  ctx.font = 'bold ' + size + 'px Arial, sans-serif';
+  ctx.fillStyle = color || '#fff';
+  ctx.textAlign = align || 'center';
+  ctx.fillText(s, x, y);
+}
+function drawPlayer(x, y) {
+  ctx.fillStyle = '#46c878';
+  ctx.beginPath(); ctx.roundRect(x - 22, y - 20, 44, 40, 11); ctx.fill();
+  ctx.strokeStyle = '#289a5a'; ctx.lineWidth = 3; ctx.stroke();
+  [-8, 8].forEach(dx => {
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x + dx, y - 5, 6, 0, 7); ctx.fill();
+    ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(x + dx + 1, y - 4, 3, 0, 7); ctx.fill();
+  });
+  ctx.strokeStyle = '#143c28'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(x, y + 4, 8, .15 * Math.PI, .85 * Math.PI); ctx.stroke();
+}
+function drawEnemy(e) {
+  ctx.fillStyle = '#dc3232'; ctx.beginPath();
+  for (let i = 0; i < 16; i++) {
+    const r = i % 2 ? e.r * .65 : e.r, a = i * Math.PI / 8;
+    ctx.lineTo(e.x + r * Math.cos(a), e.y + r * Math.sin(a));
+  }
+  ctx.closePath(); ctx.fill();
+  [-6, 6].forEach(dx => {
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(e.x + dx, e.y - 2, 5, 0, 7); ctx.fill();
+    ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(e.x + dx, e.y - 1, 2, 0, 7); ctx.fill();
+  });
+}
+function drawCoin(c) {
+  ctx.fillStyle = '#c89600'; ctx.beginPath(); ctx.arc(c.x, c.y, c.r, 0, 7); ctx.fill();
+  ctx.fillStyle = '#ffd200'; ctx.beginPath(); ctx.arc(c.x, c.y, c.r - 3, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#fff0a0'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(c.x, c.y, c.r - 7, 0, 7); ctx.stroke();
+}
+
+function draw() {
+  ctx.fillStyle = '#10142a'; ctx.fillRect(0, 0, W, H);
+  stars.forEach(s => {
+    ctx.fillStyle = s.s < 1.3 ? '#555a7a' : '#8a90b8';
+    ctx.fillRect(s.x, s.y, s.s < 1.3 ? 1 : 2, s.s < 1.3 ? 1 : 2);
+  });
+
+  if (st === 'menu') {
+    text('Собери монеты', W / 2, 190, 40);
+    drawPlayer(W / 2, 270);
+    text('Двигай пальцем', W / 2, 360, 24, '#c8c8c8');
+    text('Жёлтые монеты +1', W / 2, 395, 20, '#ffd200');
+    text('Красных шипов избегай', W / 2, 425, 20, '#ff6464');
+    text('Коснись экрана, чтобы начать', W / 2, 500, 22, '#78e696');
+    text('Рекорд: ' + rec, W / 2, 560, 26, '#ffdc64');
+    return;
+  }
+
+  g.coins.forEach(drawCoin);
+  g.en.forEach(drawEnemy);
+  if (!(g.hurt > 0 && Math.floor(g.hurt / 4) % 2)) drawPlayer(g.x, g.y);
+
+  text('Очки: ' + g.score, 12, 30, 22, '#fff', 'left');
+  text('Уровень ' + g.lvl, 12, 58, 18, '#b4b4d2', 'left');
+  text('Рекорд: ' + rec, 12, 82, 16, '#ffdc64', 'left');
+  text('♥'.repeat(g.lives), W - 12, 32, 28, '#f04678', 'right');
+  if (g.banner > 0) text('Уровень ' + g.lvl + '!', W / 2, 200, 44);
+
+  if (st === 'over') {
+    ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(0, 0, W, H);
+    text('Игра окончена', W / 2, 270, 38);
+    text('Очки: ' + g.score, W / 2, 330, 28);
+    if (g.isNew) text('Новый рекорд!', W / 2, 375, 26, '#ffdc64');
+    text('Коснись, чтобы играть снова', W / 2, 440, 20, '#c8c8c8');
+  }
+}
+
+// фиксированный шаг 60 кадров/с, чтобы на экране 120 Гц игра не ускорялась
+let last = 0, acc = 0;
+function frame(ts) {
+  acc += Math.min(ts - last, 100); last = ts;
+  while (acc >= 1000 / 60) { update(); acc -= 1000 / 60; }
+  draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(t => { last = t; frame(t); });
+</script>
+</body>
+</html>
